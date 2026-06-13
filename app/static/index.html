@@ -16,6 +16,8 @@
   input { width: 100%; padding: 11px; border: 1px solid #ccc; border-radius: 8px; margin-bottom: 8px; }
   button { cursor: pointer; border: none; border-radius: 8px; padding: 11px 16px; }
   .btn-primary { background: #2d5a27; color: #fff; width: 100%; }
+  .btn-secondary { background: #eee; color: #444; width: 100%; margin-top: 6px; }
+  .btn-danger { background: #d32f2f; color: #fff; width: 100%; margin-top: 6px; }
   .btn-link { background: none; color: #2d5a27; text-decoration: underline; padding: 8px; width: 100%; }
   .hidden { display: none; }
   .summary { display: flex; justify-content: space-between; text-align: center; }
@@ -33,13 +35,18 @@
   .tx:last-child { border-bottom: none; }
   .tx .date { font-size: 0.72rem; color: #999; }
   .tx .del { background: none; color: #bbb; font-size: 1.1rem; padding: 4px 8px; }
-  .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #333; color: #fff; padding: 10px 20px; border-radius: 20px; font-size: 0.9rem; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
+  .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #333; color: #fff; padding: 10px 20px; border-radius: 20px; font-size: 0.9rem; opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 999; }
   .toast.show { opacity: 1; }
+  .toast.error { background: #c62828; }
   h2 { font-size: 1rem; margin-bottom: 10px; }
   .topbar { display: flex; justify-content: space-between; align-items: center; margin-top: 14px; }
   .topbar span { font-size: 0.9rem; }
   .topbar button { background: none; color: #888; font-size: 0.85rem; text-decoration: underline; padding: 4px; }
   .empty { color: #aaa; text-align: center; padding: 16px; font-size: 0.9rem; }
+  .otp-badge { display: inline-block; background: #e8f5e9; color: #2d5a27; border-radius: 12px; padding: 2px 10px; font-size: 0.75rem; margin-left: 6px; }
+  .otp-badge.off { background: #fce4ec; color: #c62828; }
+  .qr-box { background: #f9f9f9; border-radius: 8px; padding: 12px; margin: 10px 0; word-break: break-all; font-size: 0.8rem; color: #555; }
+  .info { font-size: 0.82rem; color: #666; margin-bottom: 8px; line-height: 1.5; }
 </style>
 </head>
 <body>
@@ -54,12 +61,15 @@
     <h2 id="auth-title">로그인</h2>
     <input id="email" type="email" placeholder="이메일">
     <input id="username" type="text" placeholder="닉네임" class="hidden">
-    <input id="password" type="password" placeholder="비밀번호">
+    <input id="password" type="password" placeholder="비밀번호 (영문+숫자 8자 이상)">
+    <div id="otp-login-field" class="hidden">
+      <input id="otp-login-code" type="text" placeholder="OTP 코드 (앱의 6자리 숫자)" maxlength="6" inputmode="numeric">
+    </div>
     <button class="btn-primary" onclick="submitAuth()" id="auth-btn">로그인</button>
     <button class="btn-link" onclick="toggleAuth()" id="auth-toggle">처음이세요? 회원가입</button>
   </div>
 
-  <!-- 메인 화면 (로그인 후) -->
+  <!-- 메인 화면 -->
   <div id="main-section" class="hidden">
     <div class="topbar">
       <span id="welcome"></span>
@@ -85,33 +95,62 @@
       <h2>최근 지출 내역</h2>
       <div id="transactions"></div>
     </div>
+
+    <!-- 보안 설정 -->
+    <div class="card">
+      <h2>🔒 보안 설정</h2>
+      <div id="otp-status-area"></div>
+    </div>
   </div>
 </div>
 <div class="toast" id="toast"></div>
 
 <script>
-const API = '';  // 같은 서버에서 서빙되므로 상대 경로 사용
+const API = '';
 let token = localStorage.getItem('token');
+let refreshToken = localStorage.getItem('refreshToken');
+let otpEnabled = false;
 let isRegister = false;
 
 // ---------- 공통 ----------
 function fmt(n) { return Number(n).toLocaleString('ko-KR') + '원'; }
-function toast(msg) {
+function toast(msg, isError = false) {
   const t = document.getElementById('toast');
   t.textContent = msg;
-  t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 1800);
+  t.className = 'toast' + (isError ? ' error' : '') + ' show';
+  setTimeout(() => t.className = 'toast', 2200);
 }
 async function api(path, options = {}) {
   options.headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
   if (token) options.headers['Authorization'] = 'Bearer ' + token;
   const res = await fetch(API + path, options);
-  if (res.status === 401) { logout(); throw new Error('로그인이 필요합니다'); }
+
+  // 액세스 토큰 만료 시 자동 갱신
+  if (res.status === 401 && refreshToken && !path.includes('/auth/')) {
+    const ok = await tryRefresh();
+    if (ok) {
+      options.headers['Authorization'] = 'Bearer ' + token;
+      const res2 = await fetch(API + path, options);
+      if (!res2.ok) throw new Error('요청 실패');
+      return res2.status === 204 ? null : res2.json();
+    } else { logout(); throw new Error('로그인이 만료됐습니다'); }
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || '요청 실패');
   }
   return res.status === 204 ? null : res.json();
+}
+async function tryRefresh() {
+  try {
+    const data = await fetch(API + '/auth/refresh?refresh_token=' + encodeURIComponent(refreshToken), { method: 'POST' }).then(r => r.ok ? r.json() : null);
+    if (!data) return false;
+    token = data.access_token;
+    refreshToken = data.refresh_token;
+    localStorage.setItem('token', token);
+    localStorage.setItem('refreshToken', refreshToken);
+    return true;
+  } catch { return false; }
 }
 
 // ---------- 인증 ----------
@@ -121,37 +160,58 @@ function toggleAuth() {
   document.getElementById('auth-btn').textContent = isRegister ? '가입하기' : '로그인';
   document.getElementById('auth-toggle').textContent = isRegister ? '이미 계정이 있어요' : '처음이세요? 회원가입';
   document.getElementById('username').classList.toggle('hidden', !isRegister);
+  if (isRegister) document.getElementById('otp-login-field').classList.add('hidden');
 }
 async function submitAuth() {
   const email = document.getElementById('email').value.trim();
   const password = document.getElementById('password').value;
   const username = document.getElementById('username').value.trim();
+  const otpCode = document.getElementById('otp-login-code').value.trim();
   try {
     if (isRegister) {
       await api('/auth/register', { method: 'POST', body: JSON.stringify({ email, username, password }) });
       toast('가입 완료! 자동 로그인합니다');
     }
-    const data = await api('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+    const body = { email, password };
+    if (otpCode) body.otp_code = otpCode;
+    const data = await api('/auth/login', { method: 'POST', body: JSON.stringify(body) });
     token = data.access_token;
+    refreshToken = data.refresh_token;
     localStorage.setItem('token', token);
+    localStorage.setItem('refreshToken', refreshToken);
     enterMain();
-  } catch (e) { toast(e.message); }
+  } catch (e) {
+    const msg = e.message;
+    // OTP 필요 안내
+    if (msg.includes('OTP 코드가 필요')) {
+      document.getElementById('otp-login-field').classList.remove('hidden');
+      document.getElementById('otp-login-code').focus();
+      toast('OTP 코드를 입력해 주세요', true);
+    } else {
+      toast(msg, true);
+    }
+  }
 }
 function logout() {
-  token = null;
+  token = null; refreshToken = null;
   localStorage.removeItem('token');
+  localStorage.removeItem('refreshToken');
   document.getElementById('auth-section').classList.remove('hidden');
   document.getElementById('main-section').classList.add('hidden');
+  document.getElementById('otp-login-field').classList.add('hidden');
+  document.getElementById('otp-login-code').value = '';
 }
 
 // ---------- 메인 ----------
 async function enterMain() {
   try {
     const me = await api('/users/me');
-    document.getElementById('welcome').textContent = me.username + '님, 환영합니다';
+    otpEnabled = me.otp_enabled;
+    document.getElementById('welcome').textContent = me.username + '님';
     document.getElementById('auth-section').classList.add('hidden');
     document.getElementById('main-section').classList.remove('hidden');
     refresh();
+    renderOtpStatus();
   } catch (e) { /* 토큰 만료 → 로그인 화면 유지 */ }
 }
 async function refresh() {
@@ -187,7 +247,7 @@ async function deleteTx(id) {
   refresh();
 }
 
-// ---------- 상품 검색 → 클릭 구매 기록 ----------
+// ---------- 상품 검색 ----------
 let searchTimer;
 function searchProducts() {
   clearTimeout(searchTimer);
@@ -205,7 +265,7 @@ function searchProducts() {
         </div>
         <button class="buy" onclick="buy('${p.name.replace(/'/g, "\\'")}', ${p.price}, '${p.category}')">${fmt(p.price)} 기록</button>
       </div>`).join('');
-  }, 250);  // 입력 멈춘 후 250ms 뒤에 검색 (디바운스)
+  }, 250);
 }
 async function buy(name, price, category) {
   const today = new Date().toISOString().slice(0, 10);
@@ -217,7 +277,61 @@ async function buy(name, price, category) {
   refresh();
 }
 
-// 시작: 토큰이 있으면 자동 로그인 시도
+// ---------- OTP 설정 ----------
+function renderOtpStatus() {
+  const el = document.getElementById('otp-status-area');
+  if (otpEnabled) {
+    el.innerHTML = `
+      <p class="info">2단계 인증(OTP)이 <strong>활성화</strong>되어 있습니다. 로그인 시 앱의 OTP 코드가 필요합니다.</p>
+      <span class="otp-badge">OTP 켜짐</span>
+      <br><br>
+      <p class="info">비활성화하려면 현재 OTP 코드를 입력하세요:</p>
+      <input id="otp-disable-code" type="text" placeholder="6자리 OTP 코드" maxlength="6" inputmode="numeric">
+      <button class="btn-danger" onclick="disableOtp()">OTP 비활성화</button>`;
+  } else {
+    el.innerHTML = `
+      <p class="info">2단계 인증(OTP)이 <strong>꺼져</strong> 있습니다. Google Authenticator 등 앱으로 활성화하면 계정 보안이 크게 강화됩니다.</p>
+      <span class="otp-badge off">OTP 꺼짐</span>
+      <br><br>
+      <button class="btn-secondary" onclick="setupOtp()">OTP 설정 시작</button>
+      <div id="otp-setup-area"></div>`;
+  }
+}
+async function setupOtp() {
+  try {
+    const data = await api('/auth/otp/setup', { method: 'POST' });
+    document.getElementById('otp-setup-area').innerHTML = `
+      <div class="qr-box">
+        <strong>1. 아래 주소를 Google Authenticator 앱에서 "설정 키 입력"으로 추가하세요:</strong><br><br>
+        시크릿 키: <strong>${data.secret}</strong><br><br>
+        <strong>2. 또는 QR URI를 복사해서 앱에 붙여넣기:</strong><br>
+        <small>${data.qr_uri}</small>
+      </div>
+      <p class="info">앱에 추가 후, 앱에 표시된 6자리 코드를 입력하면 OTP가 활성화됩니다.</p>
+      <input id="otp-verify-code" type="text" placeholder="앱의 6자리 코드 입력" maxlength="6" inputmode="numeric">
+      <button class="btn-primary" onclick="verifyOtp()">OTP 활성화</button>`;
+  } catch (e) { toast(e.message, true); }
+}
+async function verifyOtp() {
+  const code = document.getElementById('otp-verify-code').value.trim();
+  try {
+    await api('/auth/otp/verify', { method: 'POST', body: JSON.stringify({ code }) });
+    otpEnabled = true;
+    toast('OTP가 활성화됐습니다! 다음 로그인부터 앱 코드가 필요합니다.');
+    renderOtpStatus();
+  } catch (e) { toast(e.message, true); }
+}
+async function disableOtp() {
+  const code = document.getElementById('otp-disable-code').value.trim();
+  try {
+    await api('/auth/otp/disable', { method: 'DELETE', body: JSON.stringify({ code }) });
+    otpEnabled = false;
+    toast('OTP가 비활성화됐습니다.');
+    renderOtpStatus();
+  } catch (e) { toast(e.message, true); }
+}
+
+// 시작
 if (token) enterMain();
 </script>
 </body>
