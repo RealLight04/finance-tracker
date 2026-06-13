@@ -2,6 +2,9 @@
 
 개인 가계부 REST API — FastAPI + SQLite + JWT 인증
 
+**🌐 라이브 데모**: https://finance-tracker-api-3mgc.onrender.com/docs
+(무료 호스팅 특성상 첫 접속 시 서버가 깨어나는 데 30초~1분 걸릴 수 있습니다)
+
 ## 기능
 
 - 회원가입 / 로그인 (JWT Bearer 토큰)
