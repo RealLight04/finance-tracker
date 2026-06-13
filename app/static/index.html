@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PX 가계부</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif; background: #f0f2f5; color: #222; }
+  .container { max-width: 480px; margin: 0 auto; padding: 16px; }
+  header { background: #2d5a27; color: #fff; padding: 16px; text-align: center; }
+  header h1 { font-size: 1.3rem; }
+  header p { font-size: 0.8rem; opacity: 0.85; margin-top: 4px; }
+  .card { background: #fff; border-radius: 12px; padding: 16px; margin-top: 14px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+  input, button { font-size: 1rem; }
+  input { width: 100%; padding: 11px; border: 1px solid #ccc; border-radius: 8px; margin-bottom: 8px; }
+  button { cursor: pointer; border: none; border-radius: 8px; padding: 11px 16px; }
+  .btn-primary { background: #2d5a27; color: #fff; width: 100%; }
+  .btn-link { background: none; color: #2d5a27; text-decoration: underline; padding: 8px; width: 100%; }
+  .hidden { display: none; }
+  .summary { display: flex; justify-content: space-between; text-align: center; }
+  .summary div { flex: 1; }
+  .summary .label { font-size: 0.75rem; color: #888; }
+  .summary .value { font-size: 1.05rem; font-weight: 700; margin-top: 2px; }
+  .income { color: #1976d2; }
+  .expense { color: #d32f2f; }
+  .product { display: flex; justify-content: space-between; align-items: center; padding: 10px 4px; border-bottom: 1px solid #eee; }
+  .product:last-child { border-bottom: none; }
+  .product .name { font-size: 0.95rem; }
+  .product .cat { font-size: 0.72rem; color: #999; }
+  .product .buy { background: #2d5a27; color: #fff; padding: 7px 12px; font-size: 0.85rem; white-space: nowrap; }
+  .tx { display: flex; justify-content: space-between; align-items: center; padding: 9px 4px; border-bottom: 1px solid #eee; }
+  .tx:last-child { border-bottom: none; }
+  .tx .date { font-size: 0.72rem; color: #999; }
+  .tx .del { background: none; color: #bbb; font-size: 1.1rem; padding: 4px 8px; }
+  .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #333; color: #fff; padding: 10px 20px; border-radius: 20px; font-size: 0.9rem; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
+  .toast.show { opacity: 1; }
+  h2 { font-size: 1rem; margin-bottom: 10px; }
+  .topbar { display: flex; justify-content: space-between; align-items: center; margin-top: 14px; }
+  .topbar span { font-size: 0.9rem; }
+  .topbar button { background: none; color: #888; font-size: 0.85rem; text-decoration: underline; padding: 4px; }
+  .empty { color: #aaa; text-align: center; padding: 16px; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🪖 PX 가계부</h1>
+  <p>PX 물건을 검색하고 클릭 한 번으로 지출 기록</p>
+</header>
+<div class="container">
+
+  <!-- 로그인 / 회원가입 -->
+  <div id="auth-section" class="card">
+    <h2 id="auth-title">로그인</h2>
+    <input id="email" type="email" placeholder="이메일">
+    <input id="username" type="text" placeholder="닉네임" class="hidden">
+    <input id="password" type="password" placeholder="비밀번호">
+    <button class="btn-primary" onclick="submitAuth()" id="auth-btn">로그인</button>
+    <button class="btn-link" onclick="toggleAuth()" id="auth-toggle">처음이세요? 회원가입</button>
+  </div>
+
+  <!-- 메인 화면 (로그인 후) -->
+  <div id="main-section" class="hidden">
+    <div class="topbar">
+      <span id="welcome"></span>
+      <button onclick="logout()">로그아웃</button>
+    </div>
+
+    <div class="card">
+      <h2 id="summary-title">이번 달 요약</h2>
+      <div class="summary">
+        <div><div class="label">수입</div><div class="value income" id="sum-income">0원</div></div>
+        <div><div class="label">지출</div><div class="value expense" id="sum-expense">0원</div></div>
+        <div><div class="label">잔액</div><div class="value" id="sum-balance">0원</div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>🔍 PX 상품 검색</h2>
+      <input id="search" type="text" placeholder="예: 몽쉘, 불닭, 메로나..." oninput="searchProducts()">
+      <div id="products"></div>
+    </div>
+
+    <div class="card">
+      <h2>최근 지출 내역</h2>
+      <div id="transactions"></div>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+const API = '';  // 같은 서버에서 서빙되므로 상대 경로 사용
+let token = localStorage.getItem('token');
+let isRegister = false;
+
+// ---------- 공통 ----------
+function fmt(n) { return Number(n).toLocaleString('ko-KR') + '원'; }
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 1800);
+}
+async function api(path, options = {}) {
+  options.headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+  if (token) options.headers['Authorization'] = 'Bearer ' + token;
+  const res = await fetch(API + path, options);
+  if (res.status === 401) { logout(); throw new Error('로그인이 필요합니다'); }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail || '요청 실패');
+  }
+  return res.status === 204 ? null : res.json();
+}
+
+// ---------- 인증 ----------
+function toggleAuth() {
+  isRegister = !isRegister;
+  document.getElementById('auth-title').textContent = isRegister ? '회원가입' : '로그인';
+  document.getElementById('auth-btn').textContent = isRegister ? '가입하기' : '로그인';
+  document.getElementById('auth-toggle').textContent = isRegister ? '이미 계정이 있어요' : '처음이세요? 회원가입';
+  document.getElementById('username').classList.toggle('hidden', !isRegister);
+}
+async function submitAuth() {
+  const email = document.getElementById('email').value.trim();
+  const password = document.getElementById('password').value;
+  const username = document.getElementById('username').value.trim();
+  try {
+    if (isRegister) {
+      await api('/auth/register', { method: 'POST', body: JSON.stringify({ email, username, password }) });
+      toast('가입 완료! 자동 로그인합니다');
+    }
+    const data = await api('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+    token = data.access_token;
+    localStorage.setItem('token', token);
+    enterMain();
+  } catch (e) { toast(e.message); }
+}
+function logout() {
+  token = null;
+  localStorage.removeItem('token');
+  document.getElementById('auth-section').classList.remove('hidden');
+  document.getElementById('main-section').classList.add('hidden');
+}
+
+// ---------- 메인 ----------
+async function enterMain() {
+  try {
+    const me = await api('/users/me');
+    document.getElementById('welcome').textContent = me.username + '님, 환영합니다';
+    document.getElementById('auth-section').classList.add('hidden');
+    document.getElementById('main-section').classList.remove('hidden');
+    refresh();
+  } catch (e) { /* 토큰 만료 → 로그인 화면 유지 */ }
+}
+async function refresh() {
+  const now = new Date();
+  document.getElementById('summary-title').textContent = (now.getMonth() + 1) + '월 요약';
+  const [summary, txs] = await Promise.all([
+    api(`/transactions/summary?year=${now.getFullYear()}&month=${now.getMonth() + 1}`),
+    api('/transactions?limit=15'),
+  ]);
+  document.getElementById('sum-income').textContent = fmt(summary.total_income);
+  document.getElementById('sum-expense').textContent = fmt(summary.total_expense);
+  document.getElementById('sum-balance').textContent = fmt(summary.balance);
+  renderTransactions(txs);
+}
+function renderTransactions(txs) {
+  const el = document.getElementById('transactions');
+  if (!txs.length) { el.innerHTML = '<div class="empty">아직 기록이 없어요. 위에서 상품을 검색해 보세요!</div>'; return; }
+  el.innerHTML = txs.map(t => `
+    <div class="tx">
+      <div>
+        <div>${t.title}</div>
+        <div class="date">${t.transaction_date} · ${t.category}</div>
+      </div>
+      <div>
+        <span class="${t.type === 'income' ? 'income' : 'expense'}">${t.type === 'income' ? '+' : '-'}${fmt(t.amount)}</span>
+        <button class="del" onclick="deleteTx(${t.id})">×</button>
+      </div>
+    </div>`).join('');
+}
+async function deleteTx(id) {
+  await api('/transactions/' + id, { method: 'DELETE' });
+  toast('삭제했습니다');
+  refresh();
+}
+
+// ---------- 상품 검색 → 클릭 구매 기록 ----------
+let searchTimer;
+function searchProducts() {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(async () => {
+    const q = document.getElementById('search').value.trim();
+    if (!q) { document.getElementById('products').innerHTML = ''; return; }
+    const items = await api('/products?q=' + encodeURIComponent(q));
+    const el = document.getElementById('products');
+    if (!items.length) { el.innerHTML = '<div class="empty">검색 결과가 없어요</div>'; return; }
+    el.innerHTML = items.map(p => `
+      <div class="product">
+        <div>
+          <div class="name">${p.name}</div>
+          <div class="cat">${p.category}</div>
+        </div>
+        <button class="buy" onclick="buy('${p.name.replace(/'/g, "\\'")}', ${p.price}, '${p.category}')">${fmt(p.price)} 기록</button>
+      </div>`).join('');
+  }, 250);  // 입력 멈춘 후 250ms 뒤에 검색 (디바운스)
+}
+async function buy(name, price, category) {
+  const today = new Date().toISOString().slice(0, 10);
+  await api('/transactions', {
+    method: 'POST',
+    body: JSON.stringify({ title: name, amount: price, type: 'expense', category, transaction_date: today }),
+  });
+  toast(`${name} ${fmt(price)} 기록 완료!`);
+  refresh();
+}
+
+// 시작: 토큰이 있으면 자동 로그인 시도
+if (token) enterMain();
+</script>
+</body>
+</html>
